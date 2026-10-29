@@ -1,0 +1,31 @@
+# --- AI/ML Models & Weights ---
+*.pt
+*.pth
+*.pkl
+*.h5
+*.zip
+*.pdf
+*.png
+*.jpg
+*.onnx
+models/
+
+# --- Python Environment & Cache ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+ENV/
+
+# --- IDEs & OS Files ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+GreenHouse-Dataset_Images+jsonlabels+masks/
+segment-geospatial/
+test/
+QGIS-Project/
