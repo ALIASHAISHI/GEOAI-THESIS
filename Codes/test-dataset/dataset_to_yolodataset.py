@@ -5,15 +5,21 @@ with BOTH detect (bbox) and segment (polygon) labels, plus rasterized masks.
     dataset/
     ├── data_detect.yaml
     ├── data_segment.yaml
-    ├── images/{train,val[,test]}/
-    ├── labels_detect/{train,val[,test]}/    ← YOLO bbox txt
-    ├── labels_segment/{train,val[,test]}/   ← YOLO polygon txt
-    └── masks/{train,val[,test]}/            ← PNG masks (0 / 255)
+    ├── images/{train,val,test}/
+    ├── labels_detect/{train,val,test}/    ← YOLO bbox txt
+    ├── labels_segment/{train,val,test}/   ← YOLO polygon txt
+    └── masks/{train,val,test}/            ← PNG masks
+
+Default split: 80% train / 10% val / 10% test.
+The split uses the same method as dataset_to_unetdataset.py (sort by filename
+stem, shuffle with random.Random(seed), round train/val, test = remainder),
+so with the same seed and the same set of samples, both datasets get
+identical train/val/test images.
 
 Usage
 -----
-    python labelme2yolo.py --src /path/to/labelme --dst /path/to/yolo_ds \
-                           --val 0.2 --seed 42
+    python dataset_to_yolodataset.py --src /path/to/labelme --dst /path/to/yolo_ds \
+                                     --val 0.1 --test 0.1 --seed 42
 """
 import argparse
 import json
@@ -56,6 +62,34 @@ def collect_classes(pairs, explicit):
         for s in d.get("shapes", []):
             labels.add(s["label"])
     return sorted(labels)
+
+
+# ---------- split ----------------------------------------------------------- #
+def split_pairs(pairs, val_ratio, test_ratio, seed):
+    """
+    Same logic as split_stems() in dataset_to_unetdataset.py:
+    sort by stem -> shuffle with a seeded RNG -> train/val rounded,
+    test gets the remainder.
+    """
+    train_ratio = 1.0 - val_ratio - test_ratio
+    if train_ratio <= 0:
+        raise SystemExit("val + test ratios must be < 1.0")
+
+    pairs = sorted(pairs, key=lambda p: p[0].stem)   # deterministic order
+    random.Random(seed).shuffle(pairs)
+
+    n = len(pairs)
+    n_train = int(round(n * train_ratio))
+    n_val = int(round(n * val_ratio))
+    n_train = max(1, min(n_train, n))
+    n_val = min(n_val, n - n_train)
+
+    splits = {"train": pairs[:n_train],
+              "val":   pairs[n_train:n_train + n_val]}
+    test = pairs[n_train + n_val:]
+    if test:
+        splits["test"] = test
+    return splits
 
 
 # ---------- geometry -------------------------------------------------------- #
@@ -156,19 +190,8 @@ def convert(src, dst, val_ratio, test_ratio, seed, explicit_classes, mask_mode):
     class_names = collect_classes(pairs, explicit_classes)
     class_to_id = {n: i for i, n in enumerate(class_names)}
 
-    random.seed(seed)
-    random.shuffle(pairs)
-    n = len(pairs)
-    n_val = int(round(n * val_ratio))
-    n_test = int(round(n * test_ratio))
-    n_train = max(1, n - n_val - n_test) if n > 0 else 0
-    n_val = min(n_val, n - n_train)
-    n_test = n - n_train - n_val
-
-    splits = {"train": pairs[:n_train],
-              "val":   pairs[n_train:n_train + n_val]}
-    if n_test:
-        splits["test"] = pairs[n_train + n_val:]
+    splits = split_pairs(pairs, val_ratio, test_ratio, seed)
+    n = sum(len(v) for v in splits.values())
 
     sub_dirs = ["images", "labels_detect", "labels_segment", "masks"]
     for split in splits:
@@ -177,7 +200,6 @@ def convert(src, dst, val_ratio, test_ratio, seed, explicit_classes, mask_mode):
 
     binary = mask_mode == "binary"
 
-    # outer bar across splits, inner bar across samples
     with tqdm(total=n, desc="Writing dataset", unit="sample") as pbar:
         for split, items in splits.items():
             pbar.set_postfix_str(f"split={split}")
@@ -210,9 +232,8 @@ def convert(src, dst, val_ratio, test_ratio, seed, explicit_classes, mask_mode):
 
                 pbar.update(1)
 
-    has_test = bool(n_test)
+    has_test = "test" in splits
 
-    # two separate yamls
     write_yaml(dst / "data_detect.yaml",  dst, "labels_detect",
                class_names, has_test)
     write_yaml(dst / "data_segment.yaml", dst, "labels_segment",
@@ -221,10 +242,16 @@ def convert(src, dst, val_ratio, test_ratio, seed, explicit_classes, mask_mode):
                             "masks_val: masks/val"] +
                            (["masks_test: masks/test"] if has_test else []))
 
+    # save the split lists so you can verify / reuse them
+    for split, items in splits.items():
+        (dst / f"{split}.txt").write_text(
+            "\n".join(sorted(img.stem for img, _, _ in items)) + "\n")
+
     print(f"\nDone. mask_mode={mask_mode}  classes={class_names}")
     print("  " + "  ".join(f"{k}={len(v)}" for k, v in splits.items()))
     print(f"  dataset root: {dst.resolve()}")
     print("  yamls: data_detect.yaml, data_segment.yaml")
+    print("  split lists: " + ", ".join(f"{k}.txt" for k in splits))
 
 
 # ---------- CLI ------------------------------------------------------------- #
@@ -232,8 +259,8 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", default=r"C:\Users\alias\Documents\UNI\Thesis\GreenHouse-Dataset_Images+jsonlabels+masks\Greenhousedataset\images", help="folder of labelme pairs")
     ap.add_argument("--dst", default=r"C:\Users\alias\Documents\UNI\Thesis\GreenHouse-Dataset_Images+jsonlabels+masks\clean_yolo_dataset", help="output dataset folder")
-    ap.add_argument("--val",  type=float, default=0.2, help="val ratio")
-    ap.add_argument("--test", type=float, default=0.0, help="test ratio")
+    ap.add_argument("--val",  type=float, default=0.1, help="val ratio")
+    ap.add_argument("--test", type=float, default=0.1, help="test ratio")
     ap.add_argument("--seed", type=int,   default=42)
     ap.add_argument("--classes", nargs="*", default=["1"],
                     help="fixed class name order; else auto-discover sorted")
